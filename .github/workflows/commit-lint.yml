@@ -1,0 +1,37 @@
+name: commit-lint
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  conventional-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check commit messages follow Conventional Commits
+        run: |
+          python3 - <<'PY'
+          import re, subprocess, sys
+
+          base = "origin/${{ github.base_ref }}"
+          subprocess.run(["git", "fetch", "origin", "${{ github.base_ref }}"], check=True)
+          out = subprocess.check_output(
+              ["git", "log", "--format=%s", f"{base}..HEAD"], text=True
+          )
+          pattern = re.compile(
+              r"^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)"
+              r"(\([^)]+\))?!?: .+"
+          )
+          bad = [line for line in out.splitlines() if line and not pattern.match(line)]
+          if bad:
+              print("Non-conforming commit messages:")
+              for line in bad:
+                  print("  " + line)
+              sys.exit(1)
+          print("All commit messages follow Conventional Commits.")
+          PY
