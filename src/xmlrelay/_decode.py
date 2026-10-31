@@ -106,7 +106,14 @@ class DocumentBuilder:
 
     def open_element(self, name, attrs):
         label = self._rename(name)
-        self.trail.append((label, attrs or None))
+        # The callback path carries each element's raw attribute mapping. Under
+        # namespace processing the gathered declarations are folded into it under
+        # the key "xmlns", after the regular (namespace-expanded) attributes.
+        raw_attrs = attrs
+        if self._ns_waiting is not None:
+            raw_attrs = dict(attrs)
+            raw_attrs["xmlns"] = self._ns_waiting
+        self.trail.append((label, raw_attrs or None))
         self.saved.append((self.current, self.runs))
 
         built = None

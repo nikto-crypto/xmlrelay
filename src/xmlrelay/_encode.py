@@ -33,11 +33,11 @@ def _unfold(value):
 def _has_members(value):
     """Whether ``value`` contributes any element (for pretty layout).
 
-    An empty list or tuple contributes nothing.  Every other value -- including
-    an empty set, range or generator, which cannot be cheaply inspected -- is
-    treated as contributing content.
+    An empty list contributes nothing.  Every other value -- including an empty
+    tuple, set, range or generator -- is treated as contributing content, so
+    only the list case is inspected for emptiness.
     """
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list):
         return bool(value)
     return True
 
@@ -138,46 +138,57 @@ class Encoder:
 
     # -- element emission ------------------------------------------------
 
-    def _write_series(self, name, value, depth, root=False, lead=None):
+    def _write_series(self, name, value, depth, root=False, newl_lead=None, indent_lead=None):
         first = True
         for member in _unfold(value):
             if root and self.full_document and not first:
                 raise ValueError("document with multiple roots")
             first = False
-            if lead is not None:
-                self.sink.ignorableWhitespace(lead)
-            self._write_member(name, member, depth)
+            if newl_lead is not None:
+                self.sink.ignorableWhitespace(newl_lead)
+            self._write_member(name, member, depth, indent_lead)
 
-    def _write_member(self, name, content, depth):
+    def _write_member(self, name, content, depth, indent_lead=None):
         if isinstance(content, dict):
-            self._write_mapping(name, content, depth)
+            self._write_mapping(name, content, depth, indent_lead)
         elif _is_series(content):
             if self.expand_iter:
-                tag = self._open(name)
+                tag = self._open(name, indent_lead)
                 self._write_series(self.expand_iter, content, depth + 1)
                 self.sink.endElement(tag)
             else:
-                self._write_scalar(name, str(content))
+                self._write_scalar(name, str(content), indent_lead)
         else:
-            self._write_scalar(name, content)
+            self._write_scalar(name, content, indent_lead)
 
-    def _write_scalar(self, name, content):
-        tag = self._open(name)
-        if content is not None:
-            self.sink.characters(self._stringify(content))
-        self.sink.endElement(tag)
-
-    def _open(self, name):
+    def _write_scalar(self, name, content, indent_lead=None):
+        # Convert the value first: a decode failure must surface before the
+        # element's start tag is written (matching the reference's order).
+        text = None if content is None else self._stringify(content)
         tag = self._remap(name, False)
         self._check_name(tag, "element")
+        if indent_lead is not None:
+            self.sink.ignorableWhitespace(indent_lead)
+        self.sink.startElement(tag, {})
+        if text is not None:
+            self.sink.characters(text)
+        self.sink.endElement(tag)
+
+    def _open(self, name, indent_lead=None):
+        tag = self._remap(name, False)
+        self._check_name(tag, "element")
+        if indent_lead is not None:
+            self.sink.ignorableWhitespace(indent_lead)
         self.sink.startElement(tag, {})
         return tag
 
-    def _write_mapping(self, name, mapping, depth):
+    def _write_mapping(self, name, mapping, depth, indent_lead=None):
         attrs = {}
         has_content = False
+        text = _ABSENT
         for key, value in mapping.items():
             if key == self.cdata_key:
+                text = value
                 continue
             if key == self.comment_key:
                 if _has_members(value):
@@ -196,18 +207,27 @@ class Encoder:
             if _has_members(value):
                 has_content = True
 
+        # Render the element's text before opening the tag: the reference
+        # converts attributes and then text before writing the start tag, so a
+        # decode failure in either must appear before the tag in partial output.
+        rendered = None
+        if text is not _ABSENT and text is not None:
+            rendered = self._stringify(text)
+
         tag = self._remap(name, False)
         self._check_name(tag, "element")
+        if indent_lead is not None:
+            self.sink.ignorableWhitespace(indent_lead)
         self.sink.startElement(tag, attrs)
 
-        text = _ABSENT
+        child_newl = self.newl if self.pretty else None
+        child_indent = self.indent * (depth + 1) if self.pretty else None
         for key, value in mapping.items():
             if key == self.cdata_key:
-                text = value
                 continue
-            lead = self.newl + self.indent * (depth + 1) if self.pretty else None
             if key == self.comment_key:
-                self._write_comment(value, lead=lead)
+                comment_lead = child_newl + child_indent if self.pretty else None
+                self._write_comment(value, lead=comment_lead)
                 continue
             if key == "@xmlns" and isinstance(value, dict):
                 continue
@@ -219,11 +239,14 @@ class Encoder:
                 if revised is None:
                     continue
                 child_key, child_value = revised
-            self._write_series(child_key, child_value, depth + 1, lead=lead)
+            self._write_series(
+                child_key,
+                child_value,
+                depth + 1,
+                newl_lead=child_newl,
+                indent_lead=child_indent,
+            )
 
-        rendered = None
-        if text is not _ABSENT and text is not None:
-            rendered = self._stringify(text)
         if self.pretty and has_content:
             self.sink.ignorableWhitespace(self.newl)
             if rendered:
