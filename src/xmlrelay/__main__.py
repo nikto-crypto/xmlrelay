@@ -31,4 +31,9 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    try:
+        main(sys.argv[1:])
+    except KeyboardInterrupt:
+        # Interrupting a streaming parse exits quietly with a success status
+        # rather than dumping a traceback.
+        pass

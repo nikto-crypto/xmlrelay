@@ -89,12 +89,15 @@ class DocumentBuilder:
             head, tail = name.rsplit(self.namespace_separator, 1)
         except ValueError:
             return name
-        if head in table:
+        # Look the segment up by item access (not ``in``) so a mapping subclass
+        # with a ``__missing__`` default -- e.g. a ``defaultdict`` -- applies it.
+        try:
             replacement = table[head]
-            if replacement:
-                return replacement + self.namespace_separator + tail
-            return tail
-        return name
+        except KeyError:
+            return name
+        if replacement:
+            return replacement + self.namespace_separator + tail
+        return tail
 
     # -- parser event handlers ------------------------------------------
 
@@ -198,10 +201,17 @@ class DocumentBuilder:
     # -- policy helpers --------------------------------------------------
 
     def _wants_cdata(self, name, text):
+        # Mirrors ``_wants_list``: a container selects by membership, a str by
+        # substring, a callable is consulted, and a bare bool applies globally.
         rule = self.force_cdata
-        if callable(rule):
+        if not rule:
+            return False
+        if isinstance(rule, bool):
+            return rule
+        try:
+            return name in rule
+        except TypeError:
             return rule(self.trail[:-1], name, text)
-        return bool(rule)
 
     def _wants_list(self, key, value):
         rule = self.force_list
@@ -259,7 +269,15 @@ def parse(
     builder = DocumentBuilder(namespace_separator=namespace_separator, **options)
 
     separator = namespace_separator if process_namespaces else None
-    parser = expat.ParserCreate(encoding, separator)
+    # For str input we both encode the text and tell the parser the same
+    # encoding, so that encoding (the argument, or utf-8) overrides any encoding
+    # named in the document's own XML declaration.  Bytes input is left to the
+    # parser, which honours the declaration.
+    if isinstance(xml_input, str):
+        parser_encoding = encoding or "utf-8"
+    else:
+        parser_encoding = encoding
+    parser = expat.ParserCreate(parser_encoding, separator)
 
     parser.buffer_text = True
     parser.ordered_attributes = False
@@ -279,14 +297,15 @@ def parse(
     if hasattr(xml_input, "read"):
         parser.ParseFile(xml_input)
     elif isinstance(xml_input, types.GeneratorType):
+        # Chunks are fed as produced: a str chunk is decoded by the parser as
+        # UTF-8 (overriding the declaration, as for whole-str input), while a
+        # bytes chunk is left to the parser's declared encoding.
         for chunk in xml_input:
-            if isinstance(chunk, str):
-                chunk = chunk.encode(encoding or "utf-8")
             parser.Parse(chunk, False)
         parser.Parse(b"", True)
     else:
         if isinstance(xml_input, str):
-            xml_input = xml_input.encode(encoding or "utf-8")
+            xml_input = xml_input.encode(parser_encoding)
         parser.Parse(xml_input, True)
 
     return builder.current

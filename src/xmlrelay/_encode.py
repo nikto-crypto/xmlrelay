@@ -108,11 +108,35 @@ class Encoder:
         return tail[1:] if is_attr else tail
 
     def _check_name(self, name, kind):
+        # The reference validates a name against these character rules in this
+        # exact order; when a name breaks several, the first rule here wins.
+        if not isinstance(name, str):
+            raise ValueError("%s name must be a string" % kind)
+        if name[:1] in ("?", "!"):
+            raise ValueError('Invalid %s name: cannot start with "?" or "!"' % kind)
+        if "<" in name or ">" in name:
+            raise ValueError('Invalid %s name: "<" or ">" not allowed' % kind)
+        if "/" in name:
+            raise ValueError('Invalid %s name: "/" not allowed' % kind)
+        if "'" in name or '"' in name:
+            raise ValueError("Invalid %s name: quotes not allowed" % kind)
+        if "=" in name:
+            raise ValueError('Invalid %s name: "=" not allowed' % kind)
         for ch in name:
             if ch.isspace():
                 raise ValueError("Invalid %s name: whitespace not allowed" % kind)
-        if "<" in name or ">" in name:
-            raise ValueError('Invalid %s name: "<" or ">" not allowed' % kind)
+
+    def _resolve(self, name, kind, is_attr):
+        """Namespace-remap ``name`` (if it is a string) and validate it.
+
+        The string-type check happens before remapping -- a non-string key can
+        not be remapped -- while the character rules apply to the final,
+        remapped name, matching the reference.
+        """
+        if isinstance(name, str):
+            name = self._remap(name, is_attr)
+        self._check_name(name, kind)
+        return name
 
     # -- top level -------------------------------------------------------
 
@@ -165,8 +189,7 @@ class Encoder:
         # Convert the value first: a decode failure must surface before the
         # element's start tag is written (matching the reference's order).
         text = None if content is None else self._stringify(content)
-        tag = self._remap(name, False)
-        self._check_name(tag, "element")
+        tag = self._resolve(name, "element", False)
         if indent_lead is not None:
             self.sink.ignorableWhitespace(indent_lead)
         self.sink.startElement(tag, {})
@@ -175,8 +198,7 @@ class Encoder:
         self.sink.endElement(tag)
 
     def _open(self, name, indent_lead=None):
-        tag = self._remap(name, False)
-        self._check_name(tag, "element")
+        tag = self._resolve(name, "element", False)
         if indent_lead is not None:
             self.sink.ignorableWhitespace(indent_lead)
         self.sink.startElement(tag, {})
@@ -196,12 +218,14 @@ class Encoder:
                 continue
             if key == "@xmlns" and isinstance(value, dict):
                 for prefix, uri in value.items():
+                    # The prefix is validated as an attribute name, and the URI
+                    # is converted like any other attribute value.
+                    self._check_name(prefix, "attribute")
                     field = "xmlns" if prefix == "" else "xmlns:" + prefix
-                    attrs[field] = "" if uri is None else str(uri)
+                    attrs[field] = self._attr_text(uri)
                 continue
-            if key.startswith(self.attr_prefix):
-                field = self._remap(key[len(self.attr_prefix):], True)
-                self._check_name(field, "attribute")
+            if isinstance(key, str) and key.startswith(self.attr_prefix):
+                field = self._resolve(key[len(self.attr_prefix):], "attribute", True)
                 attrs[field] = self._attr_text(value)
                 continue
             if _has_members(value):
@@ -214,8 +238,7 @@ class Encoder:
         if text is not _ABSENT and text is not None:
             rendered = self._stringify(text)
 
-        tag = self._remap(name, False)
-        self._check_name(tag, "element")
+        tag = self._resolve(name, "element", False)
         if indent_lead is not None:
             self.sink.ignorableWhitespace(indent_lead)
         self.sink.startElement(tag, attrs)
@@ -231,7 +254,7 @@ class Encoder:
                 continue
             if key == "@xmlns" and isinstance(value, dict):
                 continue
-            if key.startswith(self.attr_prefix):
+            if isinstance(key, str) and key.startswith(self.attr_prefix):
                 continue
             child_key, child_value = key, value
             if self.preprocessor is not None:
@@ -267,13 +290,22 @@ class Encoder:
             return None
         return body
 
+    def _check_comment(self, body):
+        if "--" in body:
+            raise ValueError("Comment text cannot contain '--'")
+        if body.endswith("-"):
+            raise ValueError("Comment text cannot end with '-'")
+
     def _write_comment(self, value, lead=None):
         for piece in _unfold(value):
             body = self._comment_body(piece)
             if body is None:
                 continue
+            # The leading whitespace is emitted before the body is validated, so
+            # partial output on an invalid comment matches the reference.
             if lead is not None:
                 self.sink.ignorableWhitespace(lead)
+            self._check_comment(body)
             self.sink._write("<!--" + escape(body) + "-->")
 
 

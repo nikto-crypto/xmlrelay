@@ -10,8 +10,10 @@ the exact sequence of callback invocations.
 import copy
 import io
 import marshal
+import signal
 import subprocess
 import sys
+import time
 
 import xmlrelay
 
@@ -203,3 +205,46 @@ def check_cli(args, stdin_bytes):
             "CLI error line mismatch args=%r\n  reference=%r\n  xmlrelay =%r"
             % (args, ref_last, relay_last)
         )
+
+
+def _interrupt_cli(module, extra_path):
+    """Start the CLI, let it block on stdin, send SIGINT, and capture the exit."""
+    import os
+
+    full_env = dict(os.environ)
+    full_env["PYTHONPATH"] = extra_path
+    proc = subprocess.Popen(
+        [sys.executable, "-m", module, "1"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=full_env,
+    )
+    # Give the child time to reach the blocking read on stdin, then interrupt.
+    time.sleep(0.8)
+    proc.send_signal(signal.SIGINT)
+    try:
+        out, err = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:  # pragma: no cover - defensive
+        proc.kill()
+        out, err = proc.communicate()
+    return proc.returncode, out, err
+
+
+def check_cli_keyboard_interrupt():
+    """A SIGINT during a streaming parse must behave identically on both builds."""
+    import os
+
+    oracle.reference()  # trigger skip/fail logic
+    COUNTS["cli"] += 1
+    repo_src = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "src",
+    )
+    ref = _interrupt_cli("xmltodict", oracle.ORACLE_DIR)
+    relay = _interrupt_cli("xmlrelay", repo_src)
+    assert ref == relay, (
+        "CLI KeyboardInterrupt mismatch\n  reference=%r\n  xmlrelay =%r"
+        % (ref, relay)
+    )
+    return ref, relay

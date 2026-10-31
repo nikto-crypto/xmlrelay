@@ -69,3 +69,27 @@ def test_bad_xml_exits_nonzero_with_partial_output():
     assert proc.returncode != 0
     assert _decode(proc.stdout) == [([("r", None), ("a", None)], "1")]
     assert b"ExpatError" in proc.stderr
+
+
+def test_keyboard_interrupt_exits_quietly():
+    import signal
+    import time
+
+    if sys.platform == "win32":  # pragma: no cover - POSIX SIGINT semantics
+        import pytest
+
+        pytest.skip("POSIX SIGINT semantics")
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "xmlrelay", "1"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    # the child blocks reading stdin; interrupt it mid-parse
+    time.sleep(0.8)
+    proc.send_signal(signal.SIGINT)
+    out, err = proc.communicate(timeout=10)
+    assert proc.returncode == 0
+    assert out == b""
+    assert err == b""

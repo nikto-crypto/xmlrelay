@@ -157,3 +157,70 @@ def _mapping(draw, depth):
 def unparse_inputs(draw, max_depth=3):
     """A single-root mapping suitable for ``unparse`` with ``full_document``."""
     return {draw(st.sampled_from(["root", "a", "doc"])): draw(_mapping(max_depth))}
+
+
+# -- name / comment / xmlns edge inputs (Fix round 1) ------------------------
+
+# One name per rejected character class, plus multi-rule names (to exercise the
+# first-rule-wins ordering) and names that must stay valid.
+_BAD_NAMES = [
+    "?x",       # starts with "?"
+    "!x",       # starts with "!"
+    "a<b",      # contains "<"
+    "a>b",      # contains ">"
+    "a/b",      # contains "/"
+    "a'b",      # contains a single quote
+    'a"b',      # contains a double quote
+    "a=b",      # contains "="
+    "a b",      # contains a space
+    "a\tb",     # contains a tab
+    "a\nb",     # contains a newline
+    "?<a b",    # start-rule wins over "<" and whitespace
+    "a <b",     # "<" wins over whitespace
+    "a/=b",     # "/" wins over "="
+    "x ?",      # whitespace wins (no leading "?")
+]
+_VALID_EDGE_NAMES = ["1a", "", "a.b", "-a", "a:b", "x1"]
+_NON_STRING_KEYS = [1, None, 3.5, True, (1, 2)]
+
+# Comment bodies: ones that must be rejected, and ones that stay valid.
+_BAD_COMMENTS = ["a--b", "abc-", "a--b-", "-", "--", b"a--b", b"xyz-"]
+_OK_COMMENTS = ["abc", "a & b", "", None, 0, False, b"ok", ["c1", "c2"]]
+
+# @xmlns values are converted like any other attribute value.
+_XMLNS_VALUES = [True, False, None, b"http://x/", 5, "u"]
+# @xmlns keys are validated as attribute names.
+_BAD_XMLNS_KEYS = ["m><bad", "?x", "!x", "a=b", "a b", "a/b", "a'b"]
+
+
+@st.composite
+def unparse_name_inputs(draw):
+    """A single-root mapping whose names/keys stress the validation rules.
+
+    Covers rule-breaking and valid-edge element and attribute names, non-string
+    keys, and ``@xmlns`` dicts with bad keys and with bool/bytes/None/int values.
+    """
+    shape = draw(st.integers(min_value=0, max_value=6))
+    name = draw(st.sampled_from(_BAD_NAMES + _VALID_EDGE_NAMES))
+    if shape == 0:  # root element name
+        return {name: draw(st.sampled_from(["v", {"#text": "v"}, {"c": "1"}]))}
+    if shape == 1:  # child element name
+        return {"r": {name: "v"}}
+    if shape == 2:  # attribute name
+        return {"r": {"@" + name: "v", "c": "1"}}
+    if shape == 3:  # non-string key (treated as an element name)
+        return {"r": {draw(st.sampled_from(_NON_STRING_KEYS)): "v"}}
+    if shape == 4:  # non-string root key
+        return {draw(st.sampled_from(_NON_STRING_KEYS)): "v"}
+    if shape == 5:  # @xmlns prefix (validated as an attribute name)
+        key = draw(st.sampled_from(_BAD_XMLNS_KEYS + ["", "p"]))
+        return {"r": {"@xmlns": {key: draw(st.sampled_from(_XMLNS_VALUES))}}}
+    # non-string @xmlns key
+    return {"r": {"@xmlns": {draw(st.sampled_from(_NON_STRING_KEYS)): "u"}}}
+
+
+@st.composite
+def unparse_comment_inputs(draw):
+    """A single-root mapping carrying a comment (valid or rule-breaking)."""
+    value = draw(st.sampled_from(_BAD_COMMENTS + _OK_COMMENTS))
+    return {"r": {"#comment": value, "x": "1"}}

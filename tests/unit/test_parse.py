@@ -272,6 +272,134 @@ def test_custom_expat_module_is_used():
             calls.append((encoding, separator))
             return real.ParserCreate(encoding, separator)
 
+    # For str input the effective encoding (here the utf-8 default) is passed to
+    # ParserCreate, so it overrides any declaration in the document.
     assert xmlrelay.parse("<a>t</a>", expat=Fake()) == {"a": "t"}
-    assert calls == [(None, None)]
+    assert calls == [("utf-8", None)]
     assert isinstance(types, types.ModuleType)
+
+
+def test_custom_expat_module_bytes_input_keeps_encoding_none():
+    import xml.parsers.expat as real
+
+    calls = []
+
+    class Fake:
+        def ParserCreate(self, encoding, separator):
+            calls.append((encoding, separator))
+            return real.ParserCreate(encoding, separator)
+
+    # Bytes input leaves encoding detection to the parser (declaration honoured).
+    assert xmlrelay.parse(b"<a>t</a>", expat=Fake()) == {"a": "t"}
+    assert calls == [(None, None)]
+
+
+# -- Fix round 1: selective force_cdata ---------------------------------------
+
+
+def test_force_cdata_tuple_selects_only_named():
+    assert parse("<a><b>1</b><c>2</c></a>", force_cdata=("b",)) == {
+        "a": {"b": {"#text": "1"}, "c": "2"}
+    }
+
+
+def test_force_cdata_list_selects_only_named():
+    assert parse("<a><b>1</b><c>2</c></a>", force_cdata=["b"]) == {
+        "a": {"b": {"#text": "1"}, "c": "2"}
+    }
+
+
+def test_force_cdata_set_selects_only_named():
+    assert parse("<a><b>1</b><c>2</c></a>", force_cdata={"b"}) == {
+        "a": {"b": {"#text": "1"}, "c": "2"}
+    }
+
+
+def test_force_cdata_str_matches_by_substring():
+    # "c" is a substring of both "bc" and "c", so both are forced
+    assert parse("<a><bc>1</bc><c>2</c></a>", force_cdata="bc") == {
+        "a": {"bc": {"#text": "1"}, "c": {"#text": "2"}}
+    }
+    # a str that is not a substring of either name forces nothing
+    assert parse("<a><b>1</b><c>2</c></a>", force_cdata="zz") == {
+        "a": {"b": "1", "c": "2"}
+    }
+
+
+def test_force_cdata_true_forces_all():
+    assert parse("<a><b>1</b><c>2</c></a>", force_cdata=True) == {
+        "a": {"b": {"#text": "1"}, "c": {"#text": "2"}}
+    }
+
+
+def test_force_cdata_callable():
+    result = parse(
+        "<a><b>1</b><c>2</c></a>",
+        force_cdata=lambda path, key, value: key == "b",
+    )
+    assert result == {"a": {"b": {"#text": "1"}, "c": "2"}}
+
+
+# -- Fix round 1: str input encoding overrides the XML declaration ------------
+
+
+def test_str_input_encoding_overrides_declaration():
+    assert parse('<?xml version="1.0" encoding="iso-8859-1"?><a>café</a>') == {
+        "a": "café"
+    }
+
+
+def test_str_input_explicit_encoding_used():
+    doc = '<?xml version="1.0" encoding="iso-8859-1"?><a>café</a>'
+    assert parse(doc, encoding="iso-8859-1") == {"a": "café"}
+
+
+def test_bytes_input_honours_declaration():
+    # bytes are UTF-8 but the declaration says iso-8859-1, so they are misread
+    doc = '<?xml version="1.0" encoding="iso-8859-1"?><a>café</a>'.encode("utf-8")
+    assert parse(doc) == {"a": "café".encode("utf-8").decode("latin-1")}
+
+
+def test_generator_of_str_overrides_declaration():
+    def chunks():
+        yield '<?xml version="1.0" encoding="iso-8859-1"?><a>café</a>'
+
+    assert parse(chunks()) == {"a": "café"}
+
+
+# -- Fix round 1: namespace maps looked up by item access --------------------
+
+
+def test_namespaces_defaultdict_applies_default():
+    from collections import defaultdict
+
+    result = parse(
+        '<a xmlns="http://u/"><b/></a>',
+        process_namespaces=True,
+        namespaces=defaultdict(lambda: None),
+    )
+    assert result == {"a": {"@xmlns": {"": "http://u/"}, "b": None}}
+
+
+def test_namespaces_dict_subclass_missing_applies():
+    class Prefixer(dict):
+        def __missing__(self, key):
+            return "p"
+
+    result = parse(
+        '<a xmlns="http://u/"><b/></a>',
+        process_namespaces=True,
+        namespaces=Prefixer(),
+    )
+    assert result == {"p:a": {"@xmlns": {"": "http://u/"}, "p:b": None}}
+
+
+def test_namespaces_plain_dict_unknown_left_unchanged():
+    result = parse(
+        '<a xmlns="http://u/"><b/></a>',
+        process_namespaces=True,
+        namespaces={"http://other/": "o"},
+    )
+    assert result == {
+        "http://u/:a": {"@xmlns": {"": "http://u/"}, "http://u/:b": None}
+    }

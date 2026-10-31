@@ -223,3 +223,147 @@ def test_write_only_stream_gets_bytes():
     sink = WriteOnly()
     assert unparse({"a": "t"}, output=sink) is None
     assert b"".join(sink.chunks) == b'<?xml version="1.0" encoding="utf-8"?>\n<a>t</a>'
+
+
+# -- Fix round 1: element / attribute name validation -------------------------
+
+_ELEMENT_NAME_ERRORS = [
+    ("?x", 'Invalid element name: cannot start with "?" or "!"'),
+    ("!x", 'Invalid element name: cannot start with "?" or "!"'),
+    ("a<b", 'Invalid element name: "<" or ">" not allowed'),
+    ("a>b", 'Invalid element name: "<" or ">" not allowed'),
+    ("a/b", 'Invalid element name: "/" not allowed'),
+    ("a'b", "Invalid element name: quotes not allowed"),
+    ('a"b', "Invalid element name: quotes not allowed"),
+    ("a=b", 'Invalid element name: "=" not allowed'),
+    ("a b", "Invalid element name: whitespace not allowed"),
+    ("a\tb", "Invalid element name: whitespace not allowed"),
+    ("a\nb", "Invalid element name: whitespace not allowed"),
+]
+
+
+@pytest.mark.parametrize("name, message", _ELEMENT_NAME_ERRORS)
+def test_element_name_rejected(name, message):
+    with pytest.raises(ValueError) as exc:
+        unparse({name: "v"}, full_document=False)
+    assert str(exc.value) == message
+
+
+@pytest.mark.parametrize(
+    "name, message",
+    [
+        ("?<a b", 'Invalid element name: cannot start with "?" or "!"'),
+        ("a <b", 'Invalid element name: "<" or ">" not allowed'),
+        ("a/=b", 'Invalid element name: "/" not allowed'),
+        ("x ?", "Invalid element name: whitespace not allowed"),
+    ],
+)
+def test_element_name_first_rule_wins(name, message):
+    with pytest.raises(ValueError) as exc:
+        unparse({name: "v"}, full_document=False)
+    assert str(exc.value) == message
+
+
+@pytest.mark.parametrize(
+    "name, message",
+    [
+        ("@?x", 'Invalid attribute name: cannot start with "?" or "!"'),
+        ("@a<b", 'Invalid attribute name: "<" or ">" not allowed'),
+        ("@a/b", 'Invalid attribute name: "/" not allowed'),
+        ("@a'b", "Invalid attribute name: quotes not allowed"),
+        ("@a=b", 'Invalid attribute name: "=" not allowed'),
+        ("@a b", "Invalid attribute name: whitespace not allowed"),
+    ],
+)
+def test_attribute_name_rejected(name, message):
+    with pytest.raises(ValueError) as exc:
+        unparse({"r": {name: "v"}}, full_document=False)
+    assert str(exc.value) == message
+
+
+def test_names_that_stay_valid():
+    assert unparse({"1a": "v"}, full_document=False) == "<1a>v</1a>"
+    assert unparse({"": "v"}, full_document=False) == "<>v</>"
+
+
+@pytest.mark.parametrize("key", [1, None, 3.5, True])
+def test_non_string_element_key(key):
+    with pytest.raises(ValueError) as exc:
+        unparse({key: "v"}, full_document=False)
+    assert str(exc.value) == "element name must be a string"
+
+
+def test_non_string_xmlns_key():
+    with pytest.raises(ValueError) as exc:
+        unparse({"r": {"@xmlns": {1: "u"}}}, full_document=False)
+    assert str(exc.value) == "attribute name must be a string"
+
+
+@pytest.mark.parametrize(
+    "key, message",
+    [
+        ("m><bad", 'Invalid attribute name: "<" or ">" not allowed'),
+        ("?x", 'Invalid attribute name: cannot start with "?" or "!"'),
+        ("a=b", 'Invalid attribute name: "=" not allowed'),
+        ("a b", "Invalid attribute name: whitespace not allowed"),
+    ],
+)
+def test_xmlns_prefix_validated_as_attribute(key, message):
+    with pytest.raises(ValueError) as exc:
+        unparse({"r": {"@xmlns": {key: "u"}}}, full_document=False)
+    assert str(exc.value) == message
+
+
+# -- Fix round 1: comment validation -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value, message",
+    [
+        ("a--b", "Comment text cannot contain '--'"),
+        ("--", "Comment text cannot contain '--'"),
+        ("a--b-", "Comment text cannot contain '--'"),  # "--" beats trailing "-"
+        ("abc-", "Comment text cannot end with '-'"),
+        ("-", "Comment text cannot end with '-'"),
+        (b"a--b", "Comment text cannot contain '--'"),
+        (b"xyz-", "Comment text cannot end with '-'"),
+    ],
+)
+def test_comment_rejected(value, message):
+    with pytest.raises(ValueError) as exc:
+        unparse({"r": {"#comment": value, "x": "1"}}, full_document=False)
+    assert str(exc.value) == message
+
+
+def test_valid_comment_written():
+    assert (
+        unparse({"r": {"#comment": "abc", "x": "1"}}, full_document=False)
+        == "<r><!--abc--><x>1</x></r>"
+    )
+
+
+# -- Fix round 1: @xmlns value conversion ------------------------------------
+
+
+def test_xmlns_values_converted():
+    assert (
+        unparse({"r": {"@xmlns": {"a": True, "b": b"http://x/"}}}, full_document=False)
+        == '<r xmlns:a="true" xmlns:b="http://x/"></r>'
+    )
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (True, "true"),
+        (False, "false"),
+        (None, ""),
+        (5, "5"),
+        (b"http://x/", "http://x/"),
+    ],
+)
+def test_xmlns_single_value_conversion(value, expected):
+    assert (
+        unparse({"r": {"@xmlns": {"a": value}}}, full_document=False)
+        == '<r xmlns:a="%s"></r>' % expected
+    )
