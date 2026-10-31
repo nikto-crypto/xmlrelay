@@ -68,6 +68,19 @@ No point in the build involved reconstructing reference code from memory. Where 
 behaviour felt familiar, it was still re-derived by probing smaller inputs rather
 than assumed.
 
+## Fresh review
+
+A separate agent with no prior context, bound by the same independence rules,
+reviewed the differential harness for uncovered channels, options and input
+types and added `tests/differential/test_coverage_gaps_diff.py`. That review
+surfaced four edge behaviours where `xmlrelay` diverged from the reference; each
+was re-verified against the reference as a black box and corrected (empty-tuple
+pretty layout; rendering scalar/text values before the start tag so decode
+errors appear correctly in partial output; splitting the pretty per-child lead
+around name validation; and including the gathered `xmlns` map in the callback
+`path` under namespace processing). The added tests now pass against the
+reference.
+
 ## Notes on reproduced behaviour
 
 Several deliberately permissive or surprising behaviours of the reference are
