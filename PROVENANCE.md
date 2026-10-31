@@ -81,10 +81,70 @@ around name validation; and including the gathered `xmlns` map in the callback
 `path` under namespace processing). The added tests now pass against the
 reference.
 
+## Fix round 1
+
+An external evaluation of `xmlrelay` against the reference (`xmltodict` 1.0.4)
+reported seven behaviours that diverged. Each was described only as observable
+input and output; none referenced reference source. Bound by the same
+independence rules (black-box oracle use only, errors recorded as
+`(class, message)`, no reference source read by any route), each finding was
+re-confirmed against the oracle as a black box, given harness coverage for the
+whole class of inputs (not just the reported example), fixed, and the full
+differential suite rerun clean.
+
+The seven findings, as before/after pairs verified against the oracle:
+
+1. **`unparse` name validation.** Before: names were only checked for whitespace
+   and `<`/`>`, so `{'?x': 'v'}` serialised to `<?x>v</?x>` and a non-string key
+   raised `TypeError`. After: names (element, attribute, and `@xmlns` prefixes,
+   the last validated as attribute names) are rejected with `ValueError` for a
+   leading `?`/`!`, or `<`/`>`, `/`, a quote, `=`, or whitespace — first rule in
+   that order wins — and a non-string key raises
+   `ValueError('<kind> name must be a string')`.
+2. **`unparse` comment validation.** Before: `{'#comment': 'a--b'}` emitted
+   `<!--a--b-->`. After: comment text containing `--` raises
+   `ValueError("Comment text cannot contain '--'")` and text ending in `-` raises
+   `ValueError("Comment text cannot end with '-'")`; `bytes` are decoded first.
+3. **`@xmlns` value conversion.** Before: `{'@xmlns': {'a': True}}` produced
+   `xmlns:a="True"` and `bytes` values were rendered via `repr`. After: values
+   convert like any attribute value — `True` -> `"true"`, `bytes` decoded with the
+   output encoding and `bytes_errors`, `None` -> `""`.
+4. **Selective `force_cdata`.** Before: any non-empty `force_cdata` forced every
+   element. After: a container selects by membership and a string by substring
+   (like `force_list`), so `force_cdata=('b',)` forces only `b`.
+5. **`str` input and encoding.** Before: a `str` was encoded with the effective
+   encoding but the parser was still told the document's declared encoding, so a
+   declaration like `iso-8859-1` corrupted UTF-8 text. After: the effective
+   encoding (the `encoding` argument, or UTF-8) is handed to the parser too,
+   overriding the declaration; the same applies to `str` chunks from a generator.
+6. **`namespaces` lookup.** Before: the map was probed with `in`, so a
+   `defaultdict`'s default never applied. After: it is looked up by item access,
+   so a mapping subclass with a `__missing__` default applies it.
+7. **CLI `KeyboardInterrupt`.** Before: an interrupt during a `python -m xmlrelay`
+   parse exited with a traceback and a signal status. After: it exits quietly
+   with status `0`.
+
+The harness gap that let these through was closed: generated and parametrised
+inputs now include names covering every rejected character class and non-string
+keys; comment text with `--` and with a trailing `-`; `@xmlns` dicts with bad keys
+and with bool/bytes/`None` values; `str` (and generator-of-`str`) input whose
+declaration names a non-UTF-8 encoding; `defaultdict`/dict-subclass `namespaces`;
+every container type and a string passed to `force_cdata`; and a CLI
+`KeyboardInterrupt` comparison. The oracle location is now read from
+`XMLRELAY_ORACLE_DIR` (default `~/xmlrelay-oracle`), and the README documents how
+to build the oracle and run the suite.
+
+One further divergence surfaced during this round that is **outside** the seven
+findings and was left unchanged: a top-level comment given as a *list* in
+`pretty=True` mode places its newline separators differently from the reference
+(mapping-level comment lists already match). It is recorded here so a later round
+can address it deliberately.
+
 ## Notes on reproduced behaviour
 
 Several deliberately permissive or surprising behaviours of the reference are
-reproduced on purpose (entity handling, lax name validation, the declaration
-written before an `AttributeError` on non-dict input, ASCII-stream character
-references, namespace mangling on `unparse`). These are faithful reproductions of
-the contract, not oversights.
+reproduced on purpose (entity handling, legal-but-unusual names such as a leading
+digit or an empty string passing validation, the declaration written before an
+`AttributeError` on non-dict input, ASCII-stream character references, namespace
+mangling on `unparse`). These are faithful reproductions of the contract, not
+oversights.

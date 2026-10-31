@@ -56,7 +56,9 @@ parse(xml_input, encoding=None, expat=<pyexpat>, process_namespaces=False,
 
 `xml_input` may be:
 
-- `str` -- encoded with `encoding` (or UTF-8) before parsing;
+- `str` -- encoded with `encoding` (or UTF-8) before parsing, and that same
+  encoding is handed to the parser, so it overrides any encoding named in the
+  document's own XML declaration;
 - `bytes`, `bytearray` or `memoryview` -- fed directly;
 - any object with a `.read` attribute -- treated as a **binary** file (a text
   stream raises `TypeError`);
@@ -72,7 +74,7 @@ parse(xml_input, encoding=None, expat=<pyexpat>, process_namespaces=False,
 | `cdata_separator` | `''` | Joins the character-data fragments of an element. |
 | `comment_key` | `'#comment'` | Key used for comments. |
 | `dict_constructor` | `dict` | Factory used for every mapping that is built. |
-| `force_cdata` | `False` | Force text into `cdata_key` even for a leaf. Accepts a callable `(path, name, text) -> bool`. |
+| `force_cdata` | `False` | Force text into `cdata_key` even for a leaf. Selects the same way as `force_list` (see below). |
 | `force_list` | `None` | Force list wrapping for matching keys. See below. |
 | `item_callback` | returns `True` | Called for each streamed item (see Streaming). |
 | `item_depth` | `0` | Depth at which to stream instead of build (see Streaming). |
@@ -83,10 +85,12 @@ parse(xml_input, encoding=None, expat=<pyexpat>, process_namespaces=False,
 | `strip_whitespace` | `True` | Strip surrounding whitespace from text and comments. |
 | `xml_attribs` | `True` | Include attributes in the result. |
 
-`force_list` accepts several shapes: `True`/`False`, a string or collection
-(a key is forced when `key in force_list`, so a string matches by substring), or
-a callable `(path, key, value) -> bool`. A truthy value that is neither of these
-(for example `5`) raises `TypeError`, matching the reference behaviour.
+`force_list` and `force_cdata` accept the same shapes: `True`/`False`, a string
+or collection (a name is forced when `name in force_list`, so a string matches by
+substring and a tuple/list/set/dict matches by membership), or a callable
+(`force_list(path, key, value) -> bool`, `force_cdata(path, name, text) -> bool`).
+A truthy value that is neither of these (for example `5`) raises `TypeError`,
+matching the reference behaviour.
 
 `postprocessor` is called for attributes, text, comments and elements. Returning
 `None` drops the entry (for attributes, any falsy value drops it); any other
@@ -125,7 +129,9 @@ receives text.
 
 Scalar conversion: `True`/`False` become `true`/`false`, `bytes` are decoded
 with `encoding` and `bytes_errors`, and everything else becomes `str(value)`.
-A list-valued text node becomes the `str()` of the list.
+A list-valued text node becomes the `str()` of the list. The values inside an
+`@xmlns` mapping are converted the same way (with `None` becoming an empty
+string, as for any attribute value).
 
 ## Streaming
 
@@ -162,8 +168,11 @@ xmlrelay.parse('<a:b xmlns:a="urn:x" a:c="1"/>', process_namespaces=True)
 ```
 
 The `namespaces` option remaps the leading segment of names and applies even
-without `process_namespaces`. A mapped prefix is replaced, a `None` mapping drops
-the prefix, and an unknown prefix is left unchanged.
+without `process_namespaces`. A mapped prefix is replaced, a falsy mapping drops
+the prefix, and an unknown prefix is left unchanged. The lookup is by item access,
+so a mapping subclass with a `__missing__` default -- for example a
+`collections.defaultdict` -- has its default applied to otherwise-unknown
+prefixes.
 
 ## Round-tripping
 
@@ -190,16 +199,83 @@ that are more permissive or more surprising than you might expect:
 - Entity declarations are rejected (`disable_entities=True` by default) with a
   `ValueError`, but an undefined entity under an external DTD is silently
   dropped.
-- On `unparse`, element and attribute names are only checked for whitespace and
-  `<`/`>`; other unusual names (an empty string, a leading digit) are emitted
-  as-is.
+- On `unparse`, element and attribute names (including `@xmlns` prefixes, which
+  are validated as attribute names) are rejected with a `ValueError` when they
+  start with `?`/`!`, or contain `<`/`>`, `/`, a quote, `=`, or whitespace;
+  non-string keys raise `ValueError` too. Unusual-but-legal names such as an
+  empty string or a leading digit are still emitted as-is.
+- Comment text is rejected with a `ValueError` when it contains `--` or ends with
+  `-`.
 - A non-`dict` passed to `unparse` raises `AttributeError` *after* the XML
   declaration has already been written to the output stream.
+- A `KeyboardInterrupt` during a `python -m xmlrelay` parse exits quietly with
+  status `0`.
 - When writing to an ASCII stream, non-ASCII characters become numeric
   references, but the returned string for the same call keeps the raw
   characters.
 - `namespaces` on `unparse` drops unmapped element prefixes and mangles unmapped
   attribute prefixes.
+
+## Development
+
+### Running the tests
+
+```sh
+pip install -e ".[test]"
+pytest tests/unit          # standalone, needs nothing external
+pytest tests                # also runs the differential suite (see below)
+```
+
+The unit suite stands on its own. The **differential** suite under
+`tests/differential/` compares `xmlrelay` against a reference build (the
+"oracle") on thousands of generated and curated inputs, asserting that return
+values, raised exceptions, bytes written (including partial output on failure)
+and callback sequences all match.
+
+### The differential oracle
+
+The oracle is the reference implementation (xmltodict 1.0.4) installed **as
+bytecode only** and used strictly as a black box -- `xmlrelay` is an independent
+reimplementation, so its own sources never read the reference. The oracle lives
+outside the repository; its location is read from `XMLRELAY_ORACLE_DIR`
+(default `~/xmlrelay-oracle`). Because it ships as compiled bytecode it only
+loads on the exact Python minor version and magic number recorded in its
+`ORACLE_PYTHON.txt`.
+
+When the oracle is absent or the interpreter does not match, the differential
+tests **skip**. Set `XMLRELAY_REQUIRE_ORACLE=1` to turn those skips into hard
+failures (use this in CI so a run cannot silently pass without the comparison),
+and `XMLRELAY_DIFF_SCALE` to scale the number of generated cases (e.g. `0.1` for
+a quick local run).
+
+Build the oracle once with:
+
+```sh
+ORACLE_DIR="${XMLRELAY_ORACLE_DIR:-$HOME/xmlrelay-oracle}"
+tmp="$(mktemp -d)"
+python -m pip install --target "$tmp" xmltodict==1.0.4
+mkdir -p "$ORACLE_DIR"
+TMP_XTD="$tmp" ORACLE_DIR="$ORACLE_DIR" python - <<'PY'
+import glob, importlib.util, os, py_compile, shutil, sys
+tmp, dst = os.environ["TMP_XTD"], os.environ["ORACLE_DIR"]
+# Compile to bytecode only; the reference's source is never kept in the oracle.
+py_compile.compile(os.path.join(tmp, "xmltodict.py"),
+                   cfile=os.path.join(dst, "xmltodict.pyc"), doraise=True)
+for info in glob.glob(os.path.join(tmp, "xmltodict-*.dist-info")):
+    shutil.copytree(info, os.path.join(dst, os.path.basename(info)),
+                    dirs_exist_ok=True)
+with open(os.path.join(dst, "ORACLE_PYTHON.txt"), "w") as fh:
+    fh.write("%d %d %s" % (sys.version_info.major, sys.version_info.minor,
+                           importlib.util.MAGIC_NUMBER.hex()))
+PY
+rm -rf "$tmp"
+```
+
+Then run the full comparison:
+
+```sh
+XMLRELAY_REQUIRE_ORACLE=1 pytest tests -rs
+```
 
 ## License
 
