@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xmlrelay"
+version = "1.0.0"
+description = "Convert between XML and ordered Python dictionaries."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Nick Serapiglia" }]
+keywords = ["xml", "dict", "parse", "unparse", "serialization", "expat"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Text Processing :: Markup :: XML",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/nickserapiglia/xmlrelay"
+Repository = "https://github.com/nickserapiglia/xmlrelay"
+Changelog = "https://github.com/nickserapiglia/xmlrelay/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+test = ["pytest>=7.0", "hypothesis>=6.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
