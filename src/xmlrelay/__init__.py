@@ -11,4 +11,4 @@ from ._exceptions import ParsingInterrupted
 
 __all__ = ["parse", "unparse", "ParsingInterrupted"]
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
